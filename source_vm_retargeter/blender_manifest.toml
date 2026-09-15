@@ -1,0 +1,19 @@
+schema_version = "1.0.0"
+
+id = "source_vm_retargeter"
+version = "1.0.0"
+name = "Source VM Retargeter"
+tagline = "Retarget Source-engine viewmodel animation to the Unreal Mannequin"
+maintainer = "Source VM Retargeter contributors"
+type = "add-on"
+
+website = "https://github.com/intelprais/intel"
+
+tags = ["Animation", "Rigging", "Pipeline"]
+
+blender_version_min = "4.2.0"
+
+license = ["SPDX:GPL-3.0-or-later"]
+
+[permissions]
+files = "Read and write bone-mapping presets and export FBX files"
