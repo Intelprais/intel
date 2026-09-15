@@ -42,6 +42,15 @@ to differ.
 
 ---
 
+## Download
+
+Ready-to-install build, no build step needed:
+
+**[source_vm_retargeter-1.0.0.zip](https://github.com/Intelprais/intel/raw/claude/new-session-e9xu04/release/source_vm_retargeter-1.0.0.zip)**  (79 KB)
+
+It is built from `source_vm_retargeter/` in this repository; rebuild it with
+`zip -r release/source_vm_retargeter-1.0.0.zip source_vm_retargeter -x '*.pyc' '*__pycache__*'`.
+
 ## Installation
 
 **Blender 4.2 and newer (Extension):**

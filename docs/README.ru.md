@@ -17,6 +17,15 @@ English version: [`../README.md`](../README.md)
 
 ---
 
+## Скачать
+
+Готовая сборка, ничего собирать не нужно:
+
+**[source_vm_retargeter-1.0.0.zip](https://github.com/Intelprais/intel/raw/claude/new-session-e9xu04/release/source_vm_retargeter-1.0.0.zip)**  (79 КБ)
+
+Собирается из папки `source_vm_retargeter/` этого репозитория командой
+`zip -r release/source_vm_retargeter-1.0.0.zip source_vm_retargeter -x '*.pyc' '*__pycache__*'`.
+
 ## Установка
 
 **Blender 4.2 и новее (Extension):**

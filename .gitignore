@@ -6,3 +6,4 @@ venv/
 *.blend1
 *.fbx
 /dist/
+!release/
