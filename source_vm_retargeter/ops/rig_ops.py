@@ -167,9 +167,17 @@ class SVMR_OT_detect_weapon(Operator):
         )
         if not analysis.weapon_bones:
             settings.weapon_enabled = False
+            settings.two_hand_ik = False
+            settings.weapon_follow_mode = 'NONE'
+            fill_lines(settings.analysis_text, [
+                "No weapon bones found on the source rig.",
+                "Two-Hand IK and the weapon anchor were switched off: without a "
+                "weapon they would lock the hands together and break clips where "
+                "the arms move independently.",
+                "Set the weapon reference bone manually if this rig does carry one.",
+            ])
             self.report({'WARNING'},
-                        "No weapon bones found. Set the weapon reference bone manually, "
-                        "or leave the weapon disabled for a hands-only clip.")
+                        "No weapon bones found - retargeting both hands independently.")
             return {'CANCELLED'}
 
         settings.weapon_enabled = True

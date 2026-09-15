@@ -311,6 +311,15 @@ def check_hand_drift(source_samples, target_samples, pairs, frames, calibration,
         report.info("drift", "Both hands must be mapped to measure grip drift; skipped.")
         return metrics
 
+    if settings is not None and not settings.weapon_enabled:
+        report.info(
+            "drift",
+            "No weapon: the hands are retargeted independently, so their "
+            "separation follows the target's own arm proportions rather than "
+            "the source's. Grip drift is not meaningful here.",
+        )
+        return metrics
+
     marker = _grip_marker(settings) if settings is not None else None
     if marker:
         report.info(
@@ -478,6 +487,34 @@ def check_secondary_grip_drift(context, settings, calibration, frames, report: R
     return metrics
 
 
+def check_source_translation(context, settings, pairs, report: Report) -> None:
+    """Warn when the source animates bone translation, which cannot be copied."""
+    source_obj = settings.source_armature
+    action = rig_mod.active_source_action(settings)
+    if source_obj is None or action is None:
+        return
+    mapped = {i.source_bone for i in settings.mapping if i.enabled and i.source_bone}
+    moving = set()
+    for fcurve in action.fcurves:
+        if not fcurve.data_path.endswith(".location"):
+            continue
+        values = [point.co.y for point in fcurve.keyframe_points]
+        if len(values) < 2 or (max(values) - min(values)) <= 1.0e-4:
+            continue
+        name = fcurve.data_path.split('"')[1] if '"' in fcurve.data_path else ""
+        if name in mapped:
+            moving.add(name)
+    if moving:
+        report.info(
+            "source",
+            f"{len(moving)} retargeted source bone(s) animate translation "
+            f"({', '.join(sorted(moving)[:4])}"
+            + (" ..." if len(moving) > 4 else "")
+            + "). The retarget transfers rotation only, so limb stretching in the "
+              "source is not reproduced - joint angles still match.",
+        )
+
+
 def check_scale(settings, calibration, report: Report) -> None:
     for obj, label in ((settings.source_armature, "Source"),
                        (settings.target_armature, "Target")):
@@ -536,6 +573,7 @@ def validate(context, settings, analysis=None, action=None,
     frames = sampling.frame_list(start, end, max(1, int(settings.validation_step)))
     calibration = rig_mod.compute_calibration(context, settings, pairs)
     check_scale(settings, calibration, report)
+    check_source_translation(context, settings, pairs, report)
 
     source_samples, target_samples = _sample_pair(context, settings, pairs, frames)
     check_numerics(target_samples, report)

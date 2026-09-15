@@ -32,6 +32,7 @@ from ..core import bones as bone_utils
 from ..core import mathx
 from ..core import scene as scene_utils
 from ..core.log import get_logger
+from ..profiles import base as profile_base
 from ..profiles import targets as target_profiles
 from ..profiles.base import TargetProfile
 from . import calibration as calib_mod
@@ -135,6 +136,91 @@ def active_source_action(settings):
 # calibration
 # --------------------------------------------------------------------------
 
+def limb_directions(armature_obj, key_to_bone: Dict[str, str],
+                    world: Dict[str, Matrix]) -> Dict[str, Vector]:
+    """Measure each mapped bone's limb direction in world space.
+
+    Bone +Y is not the limb axis on rigs that keep their engine-native
+    orientation (both SMD and Unreal FBX imports do), so the direction is
+    taken, in order of preference, from:
+
+    1. the next joint along the canonical chain (``upperarm -> lowerarm``),
+    2. the bone's own children in the armature,
+    3. the previous joint, for chain tips such as the last finger segment,
+    4. the bone's +Y axis, when the bone stands alone.
+
+    Both rigs are measured the same way, so the two directions are directly
+    comparable whatever each rig's bone convention happens to be.
+    """
+    out: Dict[str, Vector] = {}
+    bones = armature_obj.data.bones
+    matrix_world = armature_obj.matrix_world
+
+    for key, bone_name in key_to_bone.items():
+        own = world.get(bone_name)
+        if own is None:
+            continue
+        direction: Optional[Vector] = None
+
+        successor_key = profile_base.CHAIN_SUCCESSOR.get(key)
+        successor_bone = key_to_bone.get(successor_key) if successor_key else None
+        if successor_bone and successor_bone in world:
+            direction = world[successor_bone].translation - own.translation
+
+        if direction is None or direction.length < mathx.EPS:
+            bone = bones.get(bone_name)
+            children = list(bone.children) if bone is not None else []
+            if children:
+                centre = mathx.average_vector(
+                    (matrix_world @ child.head_local) for child in children
+                )
+                direction = centre - own.translation
+
+        if direction is None or direction.length < mathx.EPS:
+            predecessor_key = profile_base.CHAIN_PREDECESSOR.get(key)
+            predecessor_bone = key_to_bone.get(predecessor_key) if predecessor_key else None
+            if predecessor_bone and predecessor_bone in world:
+                direction = own.translation - world[predecessor_bone].translation
+
+        if direction is None or direction.length < mathx.EPS:
+            direction = Vector(mathx.orthonormalize(own).col[1])
+
+        if direction.length > mathx.EPS:
+            out[key] = direction.normalized()
+    return out
+
+
+def uses_animated_translation(pairs: Sequence[BonePair], rest: Dict[str, Matrix],
+                              posed: Dict[str, Matrix], tolerance: float = 0.01) -> bool:
+    """Does the source Action move bones off their rest offsets?
+
+    SMD stores an absolute transform per bone per frame, so Source clips often
+    place a joint somewhere the rest pose does not - the retarget is rotation
+    based, so calibrating against the rest pose would then measure the wrong
+    limb geometry.  Detected by predicting each child's head from its parent's
+    animated rotation and comparing with where the child actually is.
+    """
+    successor = profile_base.CHAIN_SUCCESSOR
+    by_key = {p.key: p.source_bone for p in pairs}
+    for pair in pairs:
+        child_bone = by_key.get(successor.get(pair.key, ""))
+        if not child_bone:
+            continue
+        own_rest = rest.get(pair.source_bone)
+        own_pose = posed.get(pair.source_bone)
+        child_rest = rest.get(child_bone)
+        child_pose = posed.get(child_bone)
+        if None in (own_rest, own_pose, child_rest, child_pose):
+            continue
+        segment = (child_rest.translation - own_rest.translation).length
+        if segment < mathx.EPS:
+            continue
+        predicted = own_pose @ own_rest.inverted_safe() @ child_rest.translation
+        if (predicted - child_pose.translation).length > tolerance * segment:
+            return True
+    return False
+
+
 def compute_calibration(context, settings, pairs: Sequence[BonePair]) -> Calibration:
     """Run the calibration pass for the current mapping and settings."""
     source_obj = settings.source_armature
@@ -146,13 +232,33 @@ def compute_calibration(context, settings, pairs: Sequence[BonePair]) -> Calibra
     source_rest = sampling.rest_world_matrices(source_obj, source_names)
     target_rest = sampling.rest_world_matrices(target_obj, target_names)
 
-    if settings.calibration_pose_source == 'FRAME':
+    mode = settings.calibration_pose_source
+    frame = int(settings.calibration_frame)
+    action = active_source_action(settings)
+    auto_note = ""
+
+    if mode in ('AUTO', 'FRAME') and action is not None:
+        start, end = bone_utils.action_frame_range(action)
+        if not start <= frame <= end:
+            frame = start
         with sampling.preserved_frame(context):
-            source_calib = sampling.pose_world_matrices(
-                context, source_obj, source_names, int(settings.calibration_frame)
-            )
+            posed = sampling.pose_world_matrices(context, source_obj, source_names, frame)
     else:
-        source_calib = dict(source_rest)
+        posed = None
+        if mode == 'AUTO':
+            mode = 'REST'
+            auto_note = "no source Action, so the rest pose is the neutral"
+
+    if mode == 'AUTO':
+        if uses_animated_translation(pairs, source_rest, posed):
+            mode = 'FRAME'
+            auto_note = (f"the source Action offsets bones from their rest positions "
+                         f"(typical of SMD), so frame {frame} is the neutral")
+        else:
+            mode = 'REST'
+            auto_note = "the source Action keeps bones at their rest offsets"
+
+    source_calib = posed if mode == 'FRAME' and posed is not None else dict(source_rest)
 
     global_rotation: Optional[Matrix] = None
     if settings.global_align_mode == 'NONE':
@@ -164,6 +270,8 @@ def compute_calibration(context, settings, pairs: Sequence[BonePair]) -> Calibra
     if settings.scale_mode == 'MANUAL':
         scale = float(settings.scale_factor)
 
+    src_of = {p.key: p.source_bone for p in pairs}
+    tgt_of = {p.key: p.target_bone for p in pairs}
     result = calib_mod.compute(
         pairs=pairs,
         source_calib_world=source_calib,
@@ -174,7 +282,11 @@ def compute_calibration(context, settings, pairs: Sequence[BonePair]) -> Calibra
         scale=scale,
         source_up=_object_up(source_obj),
         target_up=_object_up(target_obj),
+        source_dirs=limb_directions(source_obj, src_of, source_calib),
+        target_dirs=limb_directions(target_obj, tgt_of, target_rest),
     )
+    if auto_note:
+        result.notes.append(f"Calibration pose: {auto_note}.")
     return result
 
 
@@ -528,6 +640,16 @@ def build_weapon_and_ik(context, settings, profile: TargetProfile,
             f"Primary hand ({primary.upper()}) is not mapped - weapon anchor and "
             "two-hand IK are disabled."
         )
+        return
+    if not settings.weapon_enabled:
+        # Both the anchor and two-hand IK exist to keep the hands on a weapon.
+        # With no weapon they would lock the hands together and destroy clips
+        # where the arms move independently (punches, gestures, swimming).
+        if settings.two_hand_ik or settings.weapon_follow_mode != 'NONE':
+            result.notes.append(
+                "Weapon is disabled, so the weapon anchor and two-hand IK are "
+                "skipped; both hands are retargeted independently."
+            )
         return
     if settings.weapon_follow_mode == 'NONE' and not settings.two_hand_ik:
         return

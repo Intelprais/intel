@@ -134,8 +134,11 @@ class SVMR_Settings(PropertyGroup):
     calibration_mode: EnumProperty(name="Retarget Pose", items=CALIBRATION_ITEMS,
                                    default='AUTO_ALIGN')
     calibration_pose_source: EnumProperty(
-        name="Source Pose", default='REST',
+        name="Source Pose", default='AUTO',
         items=[
+            ('AUTO', "Auto",
+             "Use a frame of the source Action when it places bones away from "
+             "their rest offsets (SMD clips normally do), otherwise the rest pose"),
             ('REST', "Rest Pose", "Use the source armature's bind pose as the neutral"),
             ('FRAME', "Action Frame", "Use one frame of the source Action as the neutral"),
         ],

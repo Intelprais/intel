@@ -58,6 +58,39 @@ ALL_KEYS: List[str] = (
 )
 
 
+def _chain_successor() -> Dict[str, str]:
+    """The canonical key that continues each chain.
+
+    Used to measure a bone's *limb direction* as the vector to the next joint,
+    rather than trusting the bone's own +Y axis: Source (SMD) and Unreal (FBX)
+    rigs both keep their engine-native bone orientation, so +Y is typically
+    perpendicular to the limb and differs between the two rigs.
+    """
+    successor: Dict[str, str] = {
+        "pelvis": "spine_01",
+        "spine_01": "spine_02",
+        "spine_02": "spine_03",
+        "spine_03": "neck_01",
+        "neck_01": "head",
+    }
+    for side in SIDES:
+        successor[f"clavicle_{side}"] = f"upperarm_{side}"
+        successor[f"upperarm_{side}"] = f"lowerarm_{side}"
+        successor[f"lowerarm_{side}"] = f"hand_{side}"
+        successor[f"hand_{side}"] = f"middle_01_{side}"
+        for finger in FINGERS:
+            successor[f"{finger}_01_{side}"] = f"{finger}_02_{side}"
+            successor[f"{finger}_02_{side}"] = f"{finger}_03_{side}"
+    return successor
+
+
+#: canonical key -> next key along the same chain
+CHAIN_SUCCESSOR: Dict[str, str] = _chain_successor()
+
+#: canonical key -> previous key along the same chain
+CHAIN_PREDECESSOR: Dict[str, str] = {v: k for k, v in CHAIN_SUCCESSOR.items()}
+
+
 def key_group(key: str) -> str:
     """Coarse UI/processing group for a canonical key."""
     if key in ROOT_KEYS:

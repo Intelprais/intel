@@ -199,11 +199,18 @@ def compute(
     scale: Optional[float] = None,
     source_up: Vector = Vector((0.0, 0.0, 1.0)),
     target_up: Vector = Vector((0.0, 0.0, 1.0)),
+    source_dirs: Optional[Dict[str, Vector]] = None,
+    target_dirs: Optional[Dict[str, Vector]] = None,
 ) -> Calibration:
     """Compute ``G``, the unit scale and the per-bone offsets ``K``.
 
     ``source_calib_world`` is the source pose used as the neutral reference -
     either the rest pose or a user-chosen frame of the source Action.
+
+    ``source_dirs``/``target_dirs`` give each bone's measured limb direction in
+    world space (see :func:`..retarget.rig.limb_directions`).  AUTO_ALIGN uses
+    them instead of the bone's own +Y axis, which is meaningless on rigs that
+    keep their engine-native bone orientation.
     """
     result = Calibration()
 
@@ -234,8 +241,14 @@ def compute(
                 quat = target_rest_rot.to_quaternion()
             target_calib = quat.normalized().to_matrix()
         elif mode == MODE_AUTO_ALIGN:
-            dir_target = Vector(target_rest_rot.col[1]).normalized()
-            dir_source = Vector(source_aligned.col[1]).normalized()
+            measured_target = (target_dirs or {}).get(pair.key)
+            measured_source = (source_dirs or {}).get(pair.key)
+            if measured_target is not None and measured_source is not None:
+                dir_target = Vector(measured_target).normalized()
+                dir_source = (result.global_rotation @ Vector(measured_source)).normalized()
+            else:
+                dir_target = Vector(target_rest_rot.col[1]).normalized()
+                dir_source = Vector(source_aligned.col[1]).normalized()
             swing = mathx.swing_to(dir_target, dir_source).to_matrix()
             target_calib = swing @ target_rest_rot
         else:  # MODE_REST_TO_REST

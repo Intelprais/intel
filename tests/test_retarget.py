@@ -532,3 +532,192 @@ class TestNeutralFullBody(RetargetTestCase):
         result = rig_mod.build(bpy.context, settings)
         for bone in ("thigh_l", "calf_r", "foot_l"):
             self.assertNotIn(bone, result.driven_bones)
+
+
+def joint_angle_deg(obj, bone_a: str, bone_b: str, bone_c: str) -> float:
+    """Angle at joint ``bone_b`` between the segments to ``bone_a`` and ``bone_c``.
+
+    Computed from bone *head positions only*, so it is completely independent
+    of bone axes, rolls and of the retarget maths itself - which makes it a
+    fair check that the retargeted pose really looks like the source one.
+    """
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    evaluated = obj.evaluated_get(depsgraph)
+
+    def head(name: str) -> Vector:
+        return evaluated.matrix_world @ evaluated.pose.bones[name].matrix.translation
+
+    first = head(bone_a) - head(bone_b)
+    second = head(bone_c) - head(bone_b)
+    if first.length < 1.0e-9 or second.length < 1.0e-9:
+        return float("nan")
+    return math.degrees(first.angle(second))
+
+
+class TestPoseMatchesSourceGeometrically(RetargetTestCase):
+    """The retargeted pose must reproduce the source's joint angles."""
+
+    native_axes = False
+
+    def setUp(self):
+        self.scene = fixtures.build_scene(native_axes=self.native_axes)
+        self.source = self.scene["source"]
+        self.target = self.scene["target"]
+        self.action = self.scene["action"]
+
+    def _worst_joint_error(self):
+        settings = settings_for(self.scene, calibration_mode='AUTO_ALIGN',
+                                two_hand_ik=False, weapon_enabled=False,
+                                weapon_follow_mode='NONE')
+        result = rig_mod.build(bpy.context, settings)
+        self.assertIsNotNone(result.driver_obj)
+        source_of = {i.key: i.source_bone for i in settings.mapping if i.source_bone}
+        target_of = {i.key: i.target_bone for i in settings.mapping if i.source_bone}
+
+        worst_elbow = worst_wrist = 0.0
+        with sampling.preserved_frame(bpy.context):
+            for frame in TEST_FRAMES:
+                bpy.context.scene.frame_set(frame)
+                for side in ("l", "r"):
+                    chain = (f"upperarm_{side}", f"lowerarm_{side}", f"hand_{side}")
+                    wrist = (f"lowerarm_{side}", f"hand_{side}", f"middle_01_{side}")
+                    worst_elbow = max(worst_elbow, abs(
+                        joint_angle_deg(self.source, *(source_of[k] for k in chain))
+                        - joint_angle_deg(self.target, *(target_of[k] for k in chain))))
+                    worst_wrist = max(worst_wrist, abs(
+                        joint_angle_deg(self.source, *(source_of[k] for k in wrist))
+                        - joint_angle_deg(self.target, *(target_of[k] for k in wrist))))
+        return worst_elbow, worst_wrist
+
+    def test_elbow_and_wrist_angles_match_the_source(self):
+        elbow, wrist = self._worst_joint_error()
+        self.assertLess(elbow, 0.5, f"elbow angle off by {elbow:.2f} deg")
+        self.assertLess(wrist, 0.5, f"wrist angle off by {wrist:.2f} deg")
+
+
+class TestEngineNativeBoneAxes(TestPoseMatchesSourceGeometrically):
+    """Regression: rigs whose bone +Y is perpendicular to the limb.
+
+    Real SMD and Unreal FBX imports both keep engine-native bone rotations, so
+    the limb runs along local X. Calibrating on the bone's own +Y axis put the
+    elbow 65 deg and the wrist 92 deg off on a real Source viewmodel.
+    """
+
+    native_axes = True
+
+    def test_fixture_really_has_perpendicular_bone_axes(self):
+        bone = self.source.data.bones["ValveBiped.Bip01_R_UpperArm"]
+        child = self.source.data.bones["ValveBiped.Bip01_R_Forearm"]
+        axis = (bone.tail_local - bone.head_local).normalized()
+        limb = (child.head_local - bone.head_local).normalized()
+        self.assertGreater(math.degrees(axis.angle(limb)), 60.0,
+                           "fixture should mimic an engine-native import")
+
+    def test_limb_directions_follow_the_chain_not_the_bone_axis(self):
+        settings = settings_for(self.scene)
+        pairs = rig_mod.collect_pairs(settings)
+        source_of = {p.key: p.source_bone for p in pairs}
+        rest = sampling.rest_world_matrices(self.source, list(source_of.values()))
+        directions = rig_mod.limb_directions(self.source, source_of, rest)
+
+        measured = directions["upperarm_r"]
+        expected = (rest[source_of["lowerarm_r"]].translation
+                    - rest[source_of["upperarm_r"]].translation).normalized()
+        self.assertGreater(measured.dot(expected), 0.999)
+
+        # Chain tips have no successor and no children - they fall back to the
+        # previous joint rather than to the meaningless bone axis.
+        tip = directions["index_03_r"]
+        previous = (rest[source_of["index_03_r"]].translation
+                    - rest[source_of["index_02_r"]].translation).normalized()
+        self.assertGreater(tip.dot(previous), 0.999)
+
+
+class TestWeaponGating(RetargetTestCase):
+    def test_two_hand_ik_is_skipped_without_a_weapon(self):
+        settings = settings_for(self.scene, weapon_enabled=False, two_hand_ik=True,
+                                weapon_follow_mode='HAND_RELATIVE')
+        result = rig_mod.build(bpy.context, settings)
+        self.assertIsNone(bpy.data.objects.get(rig_mod.ANCHOR_NAME),
+                          "no weapon means no anchor")
+        self.assertEqual(result.ik_targets, {})
+        self.assertTrue(any("two-hand IK are skipped" in n for n in result.notes))
+        lower = self.target.pose.bones["lowerarm_l"]
+        self.assertFalse(any(c.type == 'IK' for c in lower.constraints),
+                         "hands must stay independent without a weapon")
+
+    def test_hands_only_clip_still_retargets_both_arms(self):
+        settings = settings_for(self.scene, weapon_enabled=False, two_hand_ik=True)
+        result = rig_mod.build(bpy.context, settings)
+        for bone in ("hand_l", "hand_r", "lowerarm_l", "lowerarm_r"):
+            self.assertIn(bone, result.driven_bones)
+
+
+class TestSourceBoneTranslation(RetargetTestCase):
+    """Source clips that hold bones off their rest offsets (SMD behaviour)."""
+
+    def _joint_errors(self, action, pose_source):
+        settings = settings_for(self.scene, calibration_pose_source=pose_source,
+                                two_hand_ik=False, weapon_enabled=False,
+                                weapon_follow_mode='NONE')
+        self._assign(action)
+        result = rig_mod.build(bpy.context, settings)
+        self.assertIsNotNone(result.driver_obj)
+        source_of = {i.key: i.source_bone for i in settings.mapping if i.source_bone}
+        target_of = {i.key: i.target_bone for i in settings.mapping if i.source_bone}
+
+        worst = 0.0
+        with sampling.preserved_frame(bpy.context):
+            for frame in (1, 11, 21):
+                bpy.context.scene.frame_set(frame)
+                chain = ("upperarm_r", "lowerarm_r", "hand_r")
+                worst = max(worst, abs(
+                    joint_angle_deg(self.source, *(source_of[k] for k in chain))
+                    - joint_angle_deg(self.target, *(target_of[k] for k in chain))))
+        rig_mod.teardown(bpy.context, settings)
+        return worst
+
+    def _assign(self, action):
+        anim = self.source.animation_data
+        anim.action = action
+        slots = list(getattr(anim, "action_suitable_slots", []) or [])
+        if slots:
+            anim.action_slot = slots[0]
+
+    def test_detects_a_clip_that_offsets_bones(self):
+        settings = settings_for(self.scene)
+        pairs = rig_mod.collect_pairs(settings)
+        names = [p.source_bone for p in pairs]
+        rest = sampling.rest_world_matrices(self.source, names)
+
+        offset_action = fixtures.build_offset_action(self.source, "vm_offset")
+        self._assign(offset_action)
+        with sampling.preserved_frame(bpy.context):
+            posed = sampling.pose_world_matrices(bpy.context, self.source, names, 1)
+        self.assertTrue(rig_mod.uses_animated_translation(pairs, rest, posed))
+
+    def test_plain_clip_is_not_flagged(self):
+        settings = settings_for(self.scene)
+        pairs = rig_mod.collect_pairs(settings)
+        names = [p.source_bone for p in pairs]
+        rest = sampling.rest_world_matrices(self.source, names)
+        with sampling.preserved_frame(bpy.context):
+            posed = sampling.pose_world_matrices(bpy.context, self.source, names, 1)
+        self.assertFalse(rig_mod.uses_animated_translation(pairs, rest, posed))
+
+    def test_auto_beats_rest_calibration_on_an_offset_clip(self):
+        action = fixtures.build_offset_action(self.source, "vm_offset")
+        rest_error = self._joint_errors(action, 'REST')
+        auto_error = self._joint_errors(action, 'AUTO')
+        self.assertGreater(rest_error, 1.0,
+                           "the offset clip should defeat rest-pose calibration")
+        self.assertLess(auto_error, 0.5,
+                        f"auto calibration still off by {auto_error:.2f} deg")
+        self.assertLess(auto_error, rest_error)
+
+    def test_auto_falls_back_to_rest_without_an_action(self):
+        settings = settings_for(self.scene, calibration_pose_source='AUTO')
+        self.source.animation_data.action = None
+        pairs = rig_mod.collect_pairs(settings)
+        calibration = rig_mod.compute_calibration(bpy.context, settings, pairs)
+        self.assertTrue(any("no source Action" in n for n in calibration.notes))

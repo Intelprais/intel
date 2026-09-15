@@ -194,8 +194,32 @@ def build_ue4_mannequin(name: str = "UE4_Mannequin") -> bpy.types.Object:
 SOURCE_SCALE = 40.0
 
 
+def engine_native_axes(obj: bpy.types.Object, length: float = 0.1352) -> None:
+    """Re-orient every bone the way an SMD/FBX import leaves it.
+
+    Blender Source Tools keeps each bone's engine-native rotation and gives all
+    bones the same arbitrary length, so the limb runs along the bone's local
+    **X** and +Y ends up perpendicular to it. Rigs imported this way broke
+    direction-based calibration until limb direction was measured from the
+    chain instead of the bone axis; this reproduces that shape exactly.
+    """
+    bpy.context.view_layer.objects.active = obj
+    bpy.ops.object.mode_set(mode='EDIT')
+    edit_bones = obj.data.edit_bones
+    for bone in edit_bones:
+        bone.use_connect = False
+    originals = {bone.name: bone.matrix.copy() for bone in edit_bones}
+    turn = Matrix.Rotation(math.radians(90.0), 4, 'Z')
+    for bone in edit_bones:
+        head = bone.head.copy()
+        bone.tail = head + Vector((0.0, length, 0.0))
+        bone.matrix = originals[bone.name] @ turn
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+
 def build_source_viewmodel(name: str = "SourceViewmodel",
-                           with_weapon: bool = True) -> bpy.types.Object:
+                           with_weapon: bool = True,
+                           native_axes: bool = False) -> bpy.types.Object:
     """ValveBiped-named viewmodel rig: arms forward, elbows bent, weapon bones."""
     world = (
         Matrix.Translation((3.0, -2.0, 0.5))
@@ -273,6 +297,8 @@ def build_source_viewmodel(name: str = "SourceViewmodel",
         builder.add("v_weapon.Grip_Unreachable", "v_weapon.Rifle_Parent",
                     far, far + Vector((0, -0.04 * scale, 0)))
     builder.finish()
+    if native_axes:
+        engine_native_axes(obj, length=0.05 * scale)
     return obj
 
 
@@ -397,7 +423,8 @@ def build_simple_action(source_obj: bpy.types.Object, action_name: str,
     return action
 
 
-def build_scene(with_weapon: bool = True) -> Dict[str, object]:
+def build_scene(with_weapon: bool = True,
+                native_axes: bool = False) -> Dict[str, object]:
     """Full test scene: target + source + reload Action, collections included."""
     reset_scene()
     ue_collection = bpy.data.collections.new("UE")
@@ -406,7 +433,7 @@ def build_scene(with_weapon: bool = True) -> Dict[str, object]:
     bpy.context.scene.collection.children.link(source_collection)
 
     target = build_ue4_mannequin()
-    source = build_source_viewmodel(with_weapon=with_weapon)
+    source = build_source_viewmodel(with_weapon=with_weapon, native_axes=native_axes)
     for obj, collection in ((target, ue_collection), (source, source_collection)):
         for existing in list(obj.users_collection):
             existing.objects.unlink(obj)
@@ -481,3 +508,44 @@ def build_ue5_scene(with_weapon: bool = True) -> Dict[str, object]:
     action = build_reload_action(source)
     bpy.context.scene.frame_set(1)
     return {"target": target, "source": source, "action": action}
+
+
+def build_offset_action(source_obj: bpy.types.Object, action_name: str,
+                        offset_bone: str = "ValveBiped.Bip01_R_Forearm",
+                        offset: float = 0.1,
+                        frames: Tuple[int, int] = (1, 21)) -> bpy.types.Action:
+    """A clip that holds a bone away from its rest offset, the way SMD does.
+
+    Source stores an absolute transform per bone per frame, so a decompiled
+    clip routinely places a joint somewhere the reference pose does not. That
+    makes the rest pose the wrong thing to calibrate against.
+    """
+    # Blender ignores location on a connected bone; SMD imports leave every
+    # bone disconnected, so match that before keying an offset.
+    bpy.context.view_layer.objects.active = source_obj
+    bpy.ops.object.mode_set(mode='EDIT')
+    edit_bone = source_obj.data.edit_bones.get(offset_bone)
+    if edit_bone is not None:
+        edit_bone.use_connect = False
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+    if source_obj.animation_data is None:
+        source_obj.animation_data_create()
+    action = bpy.data.actions.new(action_name)
+    previous = source_obj.animation_data.action
+    source_obj.animation_data.action = action
+    slots = list(getattr(source_obj.animation_data, "action_suitable_slots", []) or [])
+    if slots and getattr(source_obj.animation_data, "action_slot", None) is None:
+        source_obj.animation_data.action_slot = slots[0]
+
+    bone = source_obj.pose.bones.get(offset_bone)
+    if bone is not None:
+        shift = Vector((offset * SOURCE_SCALE, 0.0, offset * SOURCE_SCALE * 0.5))
+        for frame in frames:
+            _key_loc(bone, frame, shift)
+    elbow = source_obj.pose.bones.get("ValveBiped.Bip01_R_UpperArm")
+    if elbow is not None:
+        _key_quat(elbow, frames[0], Quaternion())
+        _key_quat(elbow, frames[1], Quaternion(Vector((0, 0, 1)), math.radians(25)))
+    source_obj.animation_data.action = previous
+    return action

@@ -195,11 +195,21 @@ bone, the constant correction that makes them agree.
 | **Rest To Rest** | The two rigs were authored in the same pose. |
 | **Manual** | Pose the Unreal rig by hand so it matches the source, then press **Capture Retarget Pose**. |
 
+Auto Align measures each bone's **limb direction from the chain** (the vector
+to the next joint), not from the bone's own +Y axis. Both SMD and Unreal FBX
+imports keep engine-native bone rotations, so +Y is usually *perpendicular* to
+the limb and differs between the two rigs - calibrating on it puts the elbow
+tens of degrees out.
+
 Additional controls:
 
-- **Source Pose** - use the source rig's rest pose as the neutral, or a chosen
-  frame of the source Action (useful when the bind pose is odd but the idle
-  frame is clean).
+- **Source Pose** - which pose is the neutral.
+  - *Auto* (default) - uses a frame of the source Action when that Action holds
+    bones away from their rest offsets, otherwise the rest pose. SMD stores an
+    absolute transform per bone per frame, so decompiled Source clips routinely
+    place a joint somewhere the reference pose does not; calibrating against the
+    rest pose would then measure the wrong limb geometry.
+  - *Rest Pose* / *Action Frame* - force one or the other.
 - **Global Align** - the rig-to-rig orientation, derived from the shoulder axis
   and the spine. Set it manually if your rigs have no usable spine.
 - **Scale** - auto (measured from arm chains) or manual.
@@ -442,6 +452,28 @@ the add-on created and nothing else.
 
 ---
 
+## Verified on real data
+
+Checked against a decompiled Source first-person hands viewmodel (39 bones,
+ValveBiped naming, no weapon, 44 clips) retargeted onto a UE4 Mannequin in the
+same scene, with the pose compared by **joint angle** - measured from bone head
+positions only, so the check is independent of bone conventions and of the
+retarget maths itself:
+
+| Clip | Frames | Bake | Worst elbow error | Worst wrist error |
+| --- | --- | --- | --- | --- |
+| `fc5_idle` | 0-60 | 0.40 s | 0.000 deg | 0.000 deg |
+| `fc5_draw` | 0-2 | 0.10 s | 0.000 deg | 0.000 deg |
+| `fc5_inspect2` | 0-275 | 1.22 s | 0.000 deg | 0.505 deg |
+| `fc5_punchLeft` | 0-13 | 0.11 s | 0.000 deg | 0.001 deg |
+| `fc5_run1` | 0-57 | 0.24 s | 0.020 deg | 0.019 deg |
+| `fc5_swimIdle` | 0-110 | 0.42 s | 0.000 deg | 0.000 deg |
+
+Auto-mapping resolved 39 of 43 canonical keys at full confidence; the four it
+left alone (`spine_01`, `spine_02`, `neck_01`, `head`) genuinely do not exist on
+that rig. The residual on `fc5_inspect2` is the one clip that animates real bone
+translation, which a rotation-only retarget cannot reproduce.
+
 ## Running the tests
 
 The suite builds both rigs from scratch - a UE4 Mannequin-like target in metres
@@ -459,14 +491,20 @@ pip install bpy==4.5.14
 python tests/run_tests.py
 ```
 
-97 tests cover naming, the maths helpers, rig analysis, auto-mapping,
+107 tests cover naming, the maths helpers, rig analysis, auto-mapping,
 calibration, the retarget identity above, flips, two-hand IK, grip markers,
 procedural torso, baking, non-destructiveness, batch, presets, validation,
-UE5, export and UI wiring.
+UE5, export, UI wiring, engine-native bone axes and source bone translation.
 
 ---
 
 ## Troubleshooting
+
+**The elbow or wrist is off by tens of degrees, but nothing errors.** The rig's
+bone axes do not run along the limbs (normal for SMD and FBX imports). Make sure
+*Retarget Pose* is on *Auto Align*, which measures limb direction from the chain.
+If it persists, the source Action may hold bones off their rest offsets - set
+*Source Pose* to *Action Frame*, or leave it on *Auto*.
 
 **Arms point the wrong way.** *Global Align* could not find a body frame -
 usually because both upper arms are not mapped. Map them, or set *Global Align*
@@ -514,7 +552,9 @@ proportionally - check the mapping rows marked `CHAIN`.
   the retargeted upper body over an existing locomotion clip is left to Unreal's
   AnimBP (or a future NLA-based mode).
 - Rotation only. Bone-to-bone translation is never transferred; squash/stretch
-  and scale animation on the source are not retargeted.
+  and scale animation on the source are not retargeted. Source clips do animate
+  bone translation (limbs stretching by a few percent), and validation reports
+  it as INFO - joint angles still match, but limb stretching does not carry over.
 - Mirrored (negatively scaled) armatures are de-mirrored, because a mirror is
   not a rotation. Validation warns when it sees one.
 - Auto-mapping needs both upper arms to resolve the global alignment. Hands-only
