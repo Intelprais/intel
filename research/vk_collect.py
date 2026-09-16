@@ -29,9 +29,30 @@ vk_collect.py — сбор фактов о VK-страницах для базы
 Токен: vk.com/dev -> создать Standalone-приложение -> получить user access token
 со scope 'groups,offline'. Токен передавать через переменную окружения, не в истории команд.
 """
-import argparse, csv, json, os, re, sys, time, datetime as dt
+import argparse, csv, json, os, re, ssl, sys, time, datetime as dt
 from urllib.parse import urlencode
 from urllib.request import urlopen, Request
+
+
+def _ssl_context():
+    """У Python на Windows часто нет набора корневых сертификатов, отсюда
+    CERTIFICATE_VERIFY_FAILED. Берём доверенные корни из системного хранилища
+    (truststore — работает и с корпоративными сертификатами), иначе из certifi,
+    иначе штатные. Проверку сертификатов НЕ отключаем ни при каких условиях."""
+    try:
+        import truststore
+        return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    except Exception:
+        pass
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        pass
+    return ssl.create_default_context()
+
+
+SSL_CTX = _ssl_context()
 
 API_VERSION = "5.199"
 API_URL = "https://api.vk.com/method/"
@@ -112,9 +133,14 @@ class VKApi:
         req = Request(API_URL + method + "?" + urlencode(params), headers={"User-Agent": UA})
         for attempt in range(4):
             try:
-                body = json.loads(urlopen(req, timeout=30).read().decode())
+                body = json.loads(urlopen(req, timeout=30, context=SSL_CTX).read().decode())
             except Exception as e:
                 log(f"  ! сеть: {e} (попытка {attempt+1})")
+                if "CERTIFICATE_VERIFY_FAILED" in str(e):
+                    sys.exit("\nУ Python нет корневых сертификатов. Выполните одну из команд:\n"
+                             "    pip install truststore      (берёт сертификаты из хранилища Windows)\n"
+                             "    pip install certifi\n"
+                             "и запустите скрипт снова.")
                 time.sleep(2 ** attempt)
                 continue
             self.calls += 1
