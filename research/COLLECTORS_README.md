@@ -11,10 +11,26 @@
 ## Шаг 1. Подготовка (один раз)
 
 ```bash
-git clone https://github.com/Intelprais/intel.git
+git clone -b claude/russia-fursuit-cosplay-leads-dabkus https://github.com/Intelprais/intel.git
 cd intel/research
 pip install playwright
 playwright install chromium
+```
+
+Флаг `-b` обязателен: работа лежит в ветке пул-реквеста, а не в `master`.
+Без него скачается пустой `master` и папки `research/` не будет.
+
+Если уже склонировали без `-b`, доберите ветку прямо в существующей папке:
+```bash
+cd intel
+git fetch origin claude/russia-fursuit-cosplay-leads-dabkus
+git checkout claude/russia-fursuit-cosplay-leads-dabkus
+cd research
+```
+
+Проверка, что всё на месте:
+```bash
+ls          # ожидаем vk_collect.py, avito_collect.py, livemaster_collect.py, leads.json
 ```
 Playwright нужен для Авито и Ярмарки. Для VK через API он не нужен.
 
