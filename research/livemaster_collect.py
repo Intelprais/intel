@@ -53,6 +53,30 @@ def connect(cdp):
     return pw, browser, ctx
 
 
+def wait_for_human(page, what="проверку"):
+    """CAPTCHA решает ЧЕЛОВЕК, не скрипт. Останавливаемся и ждём.
+    Возвращает True, если после вмешательства страница чистая."""
+    log("")
+    log("=" * 64)
+    log(f"  Сайт показал {what}.")
+    log("  Пройдите её ВРУЧНУЮ в окне Chrome (вкладка уже открыта),")
+    log("  затем вернитесь сюда и нажмите Enter — продолжу с того же места.")
+    log("  q + Enter — остановиться и сохранить собранное.")
+    log("=" * 64)
+    try:
+        ans = input("  [Enter — продолжить / q — выход] ").strip().lower()
+    except EOFError:
+        return False
+    if ans == "q":
+        return False
+    try:
+        page.reload(wait_until="domcontentloaded")
+        page.wait_for_timeout(2000)
+    except Exception:
+        pass
+    return True
+
+
 def blocked(page):
     try:
         body = page.inner_text("body")[:3000].lower()
@@ -123,10 +147,14 @@ def collect(ctx, queries, pages, rows):
                     page.mouse.wheel(0, 4000)
                     page.wait_for_timeout(900)
 
+                tries = 0
+                while blocked(page) and tries < 3:
+                    tries += 1
+                    if not wait_for_human(page, "проверку"):
+                        log(f"   Останавливаюсь. Собрано: {len(rows)} строк — сохраняю.")
+                        return
                 if blocked(page):
-                    log("\n!! Сайт показал проверку. Пройдите её вручную в окне Chrome "
-                        "и запустите скрипт снова.")
-                    log(f"   Собрано до остановки: {len(rows)} строк — сохраняю.")
+                    log("   Проверка не снялась. Останавливаюсь, сохраняю собранное.")
                     return
 
                 items = parse_cards(page)

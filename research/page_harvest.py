@@ -109,12 +109,16 @@ def main():
             if cmd == "q":
                 break
 
-            ctx = browser.contexts[0] if browser.contexts else None
-            pages = [pg for pg in (ctx.pages if ctx else []) if not pg.is_closed()]
+            pages = []
+            for c in browser.contexts:
+                pages += [pg for pg in c.pages if not pg.is_closed()]
+            pages = [pg for pg in pages if (pg.url or "").startswith("http")]
             if not pages:
-                log("  Нет открытых вкладок.")
+                log("  Нет открытых http-вкладок.")
                 continue
-            page = pages[-1]          # последняя активная вкладка
+            # предпочитаем вкладку знакомой площадки, иначе последнюю
+            page = next((pg for pg in pages if pattern_for(pg.url)), pages[-1])
+            log(f"  читаю вкладку: {page.url[:110]}")
             try:
                 data = page.evaluate(HARVEST_JS)
             except Exception as e:
@@ -122,6 +126,8 @@ def main():
                 continue
 
             pat = None if a.all_links else pattern_for(data["url"])
+            log(f"  ссылок на странице: {len(data['items'])}"
+                + ("" if a.all_links else f", фильтр: {'есть' if pat else 'нет'}"))
             new = 0
             for it in data["items"]:
                 u = it["url"]
